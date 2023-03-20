@@ -1,0 +1,665 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+##Midterm 
+#Big Data Econometrics 
+#03.28.22
+
+#* **[Step 1](#Step1)**
+
+#* [Why not impute rerun_ID, run_ID discussion]
+#* [Comment on distribution of Varables](#Comment) 
+
+#* **[Step 2](#Step2)**
+
+#* [Feature selection using Lasso](#Lasso)
+#* [Select the features for all the models](#Lasso)
+#* [Logit](#Logit) 
+#* [LDA](#lda) 
+#* [QDA](#qda) 
+#* [NB](#nb)  
+#* [KNN](#knn)
+
+#* [Comment on multi-collinearity](#collinearity)
+#* [Estimate errors using bootstrap](#bootstrap)
+
+#* *k-fold cross validation setup*
+#* [Logit CV](#Logitcv) 
+#* [LDA CV](#ldacv) 
+#* [QDA CV](#qdacv) 
+#* [NB CV](#nbcv)  
+#* [KNN CV](#knncv)
+
+#* [Explain models differences](#various)
+
+#* **[Step 3](#Step3)**
+#* *Compare performance using ROC and AUC measures*
+#* [Logit performance](#Logitp) 
+#* [LDA performance](#ldap) 
+#* [QDA performance](#qdap) 
+#* [NB performance](#nbp)  
+#* [KNN performance](#knnp)
+
+#* **[Step 4](#Step4)**
+
+#* [Treatments of test data](#testD)
+#* [Identify which model is selected using x-validation](#Identify)
+#* [Rebuild the model using full train dataa](#Rebuild)
+#* [Submit results](#Submit)
+  
+```{r}
+  
+library(dplyr)
+library(caret)
+library(glmnet)
+library(naivebayes)
+library(Matrix)
+library(pROC)
+library(ggplot2)
+library(lattice)
+library(kernlab)
+library(regclass)
+library(MASS)
+library(mltools)
+library(data.table)
+library(class)
+
+
+tf = read.csv("~/Downloads/star_classification.csv")
+
+sum(is.na.data.frame(tf))
+```
+#[1] 0
+
+
+
+# The data consists of 100,000 observations of space taken by the SDSS (Sloan Digital Sky Survey). Every observation is described by 17 feature columns and 1 class column which identifies it to be either a star, galaxy or quasar.
+
+#obj_ID = Object Identifier, the unique value that identifies the object in the image catalog used by the CAS
+#alpha = Right Ascension angle (at J2000 epoch)
+#delta = Declination angle (at J2000 epoch)
+#u = Ultraviolet filter in the photometric system
+#g = Green filter in the photometric system
+#r = Red filter in the photometric system
+#i = Near Infrared filter in the photometric system
+#z = Infrared filter in the photometric system
+#run_ID = Run Number used to identify the specific scan
+#rereun_ID = Rerun Number to specify how the image was processed
+#cam_col = Camera column to identify the scanline within the run
+#field_ID = Field number to identify each field
+#spec_obj_ID = Unique ID used for optical spectroscopic objects (this means that 2 different observations with the same spec_obj_ID must share the output class)
+#class = object class (galaxy, star or quasar object)
+#redshift = redshift value based on the increase in wavelength
+#plate = plate ID, identifies each plate in SDSS
+#MJD = Modified Julian Date, used to indicate when a given piece of SDSS data was taken
+#fiber_ID = fiber ID that identifies the fiber that pointed the light at the focal plane in each observation
+
+
+# Convert features to factors 
+# Features: alpha, delta, u, g, r, i, z
+```{r}
+subset = subset(tf, tf$class == "QSO")
+tf = anti_join(tf, subset)
+```
+
+```{r}
+tf$class = as.factor(tf$class)
+```
+
+
+```{r}
+tf = tf %>%
+  mutate(class_GALAXY = case_when( class == "GALAXY" ~ 1, TRUE ~ 0))
+contrasts(tf$class)
+```
+
+
+##Visualize the data
+
+#In this data set, we first eliminated quasar from the feature class, and conducted our model with only galaxy and star. By exploring the data without quasar, we can see from the histogram summaries that alpha, delta, r, i, run_ID, MJD are distributed close to normal. We will further our selection of features into models by verifying from Lasso for feature selection.
+# histogram on the right
+```{r}
+library(skimr)
+skim(tf)
+```
+
+# data summary
+```{r}
+attach(tf) 
+str(tf)
+```
+
+##
+
+##Exclude QSO as a class and create a train8 (90%) and a test (10%) of the data
+#Both of these after multiple iterations found no significance
+```{r}
+tf$run_ID = NULL
+tf$rerun_ID = NULL 
+
+trainIndex <- createDataPartition(y = tf$class, p= 0.9, list = FALSE)
+# 90%  train8 data
+train <- tf[trainIndex,] 
+# 10% testing data
+test <- tf[-trainIndex,]
+
+```
+
+
+
+
+####Step 2 #####
+##Split the 90% of the train8 set to train1 (80%) test1(20%)
+```{r}
+trainIndex2 <- createDataPartition(y = train$class, p= 0.8, list = FALSE)
+
+# 80%  train8 data
+train8 <- train[trainIndex2,] 
+# 20% testing data
+test2 <- train[-trainIndex2,]
+```
+
+
+
+#cross validation 
+```{r}
+options(scipen = 99999)
+```
+
+
+### Feature selection using Lasso
+# We are using 10-fold cross validation to check the Lasso selections  
+# Define predictor matrix
+
+
+```{r}
+x <- model.matrix(class_GALAXY ~ . -class, train8)[, -1] # define predictor matrix
+y <- train8$class_GALAXY
+
+grid <- 10^seq(10, -2, length = 100)
+x.test <- model.matrix(class_GALAXY ~ ., data = test2)[, -1]
+model.lasso <- glmnet(x, y, alpha = 1, lambda = grid, thresh = 1e-12)
+```
+
+
+# plot the coefficients with the log of Lama for the predictors
+```{r}
+plot(model.lasso, xvar = "lambda", label = TRUE)
+```
+
+
+
+```{r}
+cv.out <- cv.glmnet(x, y, alpha = 1)
+
+plot(cv.out)
+```
+
+```{r}
+bestlam = cv.out$lambda.min
+out = glmnet(x, y, alpha = 1, lambda = grid)
+lasso.coef = predict(out, type = "coefficients", s = bestlam)[1:16,]
+
+lasso.coef
+```
+##feature selection is alpha + delta + i + redshift + MJD
+## since we dropped features with coef=0 from above results
+
+# best lambda:
+```{r}
+bestlam
+```
+
+
+
+#<div id="Logit"></div>
+## Step2
+
+### Regressions without k-fold cross validation
+#<div id="Logit"></div>
+#**Model 1 : Logistic Regression**
+  
+```{r}
+logit_fit <- train(class ~ alpha + delta + i + redshift + MJD - class_GALAXY, 
+                   data = train8, 
+                   method = "glm", 
+                   preProcess = c("center", "scale"),
+                   tuneLength = 10)
+logit_fit
+```
+
+
+#Accuracy = 0.9206363
+
+#**Model 2 : Linear Discriminant Analysis (LDA)**
+  
+```{r}
+lda_fit <- train(class ~ alpha + delta + i + redshift + MJD - class_GALAXY,
+                 data = train8, 
+                 method = "lda",
+                 metric = "Accuracy",
+                 preProcess = c("center", "scale"))
+
+lda_fit
+```
+
+
+#Accuracy = 0.9206363
+#<div id="qda"></div>
+#**Model 3 : Quadratic Discriminant Analysis (QDA)**
+
+```{r}
+qda_fit <- train(class ~alpha + delta + i + redshift + MJD - class_GALAXY, 
+                 data = train8, 
+                 method = "qda",
+                 preProcess = c("center", "scale"),
+                 tuneLength = 10
+)
+
+qda_fit
+```
+
+##Accuracy = 0.9925117
+
+#**Model 4 : Naive Bayes (NB)**
+```{r}
+nb_fit <- train(class ~alpha + delta + i + redshift + MJD - class_GALAXY, 
+                data = train8, 
+                method = "naive_bayes",
+                preProcess = c("center", "scale"),
+                  tuneLength = 10)
+
+nb_fit
+```
+
+#usekernel  Accuracy   Kappa    
+#FALSE      0.9904246  0.9756303
+#TRUE      0.9915564  0.9785616
+
+#**Model 5 :  K-Nearest Neighbors (KNN)**
+  
+```{r}
+library(class)
+train.X <- cbind(train8[,-c(12,17)])  
+test.X <- test2[,-c(12,17)]
+train.class <- train8[,12]  #vector of the training response variable
+```
+
+
+```{r}
+set.seed(12345)
+knn.pred <- knn(train.X, test.X, train.class, k = 3)
+table(knn.pred, test2$class)
+```
+# calculate result
+```{r}
+(9746+2226)/(9746+2226+1661+954)
+```
+
+
+#Accuracy
+#[1] 0.8207308
+```{r}
+mean(knn.pred != train8$class)
+```
+```{r}
+mean(knn.pred != test2$class)
+```
+
+
+
+## bootstrap 
+### Estimate errors using bootstrap
+
+```{r}
+library(tidyverse)
+library(mosaic)
+library(boot)
+```
+
+```{r}
+index = test2
+boot.logit <- function(data, index){
+  coef(glm(class~ alpha + delta +i + redshift + MJD, data = train8, family= binomial, subset = index))
+}
+boot(test2, boot.logit, R=10)
+
+index = test2
+boot.lda <- function(data, index){
+  coef(lda(class~ alpha + delta +i + redshift + MJD, data = train, subset = index))
+}
+boot(train8, boot.lda, R = 10)
+
+index = test2
+boot.logit <- function(data, index){
+  logit.fit<- glm(class~ alpha + delta +i + redshift + MJD, data = train, family = binomial, subset = index)       
+  stats <- coef(summary(logit.fit)) [,"Std. Error"]
+  return(stats)}
+bootstrap <- boot(train8, boot.logit, R=100)
+bootstrap
+```
+
+
+## I couldn't get the QDA function to run with bootstrap and i know that factors/binary numbers are hard to determine using bootstrap
+
+
+### Regressions with k-fold cross validation
+# I choose **10-fold** cross-validation because it is popular to choose 5 or 10 folds
+
+# to add the *10-fold* cross-validation I create the argument **trctrl** useing **trainControl** from caret, In our case the Control will be cross-validation with k=10
+
+
+# **Model 1 : Logistic Regression With CV**
+```{r}
+train8$class_GALAXY = as.factor(train8$class_GALAXY)
+```
+
+
+# The Control  for the 10-fold CV
+```{r}
+trctrl <- trainControl(method = "cv", number = 10 )
+train8$obj_ID = NULL
+```
+
+# The regression with the Control
+```{r}
+Logit_CV <- train(class ~alpha + delta + i + redshift + MJD - class_GALAXY, 
+                  data = train, 
+                  family = "binomial",
+                  method = "glm",
+                  trControl=trctrl, 
+                  # Applying the Control 
+                  preProcess = c("center", "scale"),
+                  tuneLength = 10
+)
+Logit_CV
+```
+
+
+#Accuracy   Kappa    
+#0.9934463  0.9833581
+
+#  **Model 2 : LDA with CV**
+
+#The Control 
+```{r}
+trctrl <- trainControl(method = "cv", number = 10 )
+```
+
+
+# The regression with the Control
+```{r}
+lda_CV <- train(class ~ alpha + delta + i + redshift + MJD - class_GALAXY,
+                data = train, 
+                method = "lda",
+                metric = "Accuracy",
+                trControl = trctrl,  # Applying the Control
+                preProcess = c("center", "scale")
+)
+
+lda_CV 
+```
+
+
+##Accuracy   Kappa    
+#0.9211913  0.7924963
+#  **Model 3 : QDA with CV**
+
+#The Control for the 10-fold CV 
+```{r}
+trctrl <- trainControl(method = "cv", number = 10 )
+```
+
+
+# The regression with the Control
+```{r}
+qda_CV <- train(class ~alpha + delta + i + redshift + MJD - class_GALAXY, 
+                data = train, 
+                method = "qda",
+                trControl=trctrl, # Applying the Control
+                preProcess = c("center", "scale"),
+                tuneLength = 10)
+
+
+qda_CV
+```
+
+
+##Accuracy  Kappa    
+#0.992747  0.9815426
+#  **Model 4 : Naive Bayes with CV**
+
+#The Control for the 10-fold CV 
+```{r}
+trctrl <- trainControl(method = "cv", number = 10 )
+```
+
+
+# The regression with the Control
+```{r}
+nb_CV <- train(class ~alpha + delta + i + redshift + MJD - class_GALAXY, data = 
+                 train, 
+               method = "naive_bayes",
+               trControl=trctrl, # Applying the CV
+               preProcess = c("center", "scale"),
+               tuneLength = 10
+)
+
+nb_CV
+```
+
+
+#usekernel  Accuracy   Kappa    
+#FALSE      0.9904437  0.9756893
+#TRUE      0.9908550  0.9768201
+#  **Model 5 : KNN with CV**
+
+#The Control for the 10-fold CV 
+```{r}
+trctrl <- trainControl(method = "cv", number = 10 )
+```
+
+
+# The regression with the Control
+```{r}
+knn_cv <- train(class ~alpha + delta + i + redshift + MJD - class_GALAXY, 
+                data = train, 
+                method = "knn",
+                trControl=trctrl,
+                preProcess = c("center", "scale"),
+                tuneLength = 10
+)
+
+
+knn_cv
+```
+
+#Accuracy where k = 5 is 97.78%
+
+#These models have good accuracy over all; the logistic regression , lda ,QDA, NB and the KNN have more than 90% of the accuracy, however, that could improve after using the cross-valudation 
+
+###Compare performance using ROC and AUC measures
+
+#  **Model 1 : Logistic Regression ROC**
+
+# Creating prediction using the Logistic Regression
+
+# create a confusion matrix
+```{r}
+myglmProb = predict(Logit_CV, test2)
+as.numeric(myglmProb) 
+myglmPred = rep("GALAXY", 14587) 
+# convert to STAR based on predicted probability > 0.5
+myglmPred[myglmProb = 2] = "STAR" 
+
+# create a confusion matrix
+confusionMatrix(myglmProb, test2$class )
+
+```
+
+
+#Accuracy : 0.9947    
+#  **Model 2 : LDA ROC**
+
+```{r}
+preds_xgb <- bind_cols(
+  predict(lda_CV, newdata = test2, type = "prob"),
+  Predicted = predict(lda_CV, newdata = test2, type = "raw"),
+  Actual = test2$class
+)
+```
+
+##Accuracy : 0.924 
+# Works
+```{r}
+confusionMatrix(preds_xgb$Predicted, reference = preds_xgb$Actual)
+```
+
+
+
+#  **Model 3:  QDA ROC**
+
+```{r}
+preds_qda <- bind_cols(
+  predict(qda_CV, newdata = test2, type = "prob"),
+  Predicted = predict(qda_CV, newdata = test2, type = "raw"),
+  Actual = test2$class)
+```
+
+
+
+# Works
+```{r}
+confusionMatrix(preds_qda$Predicted, reference = preds_qda$Actual)
+```
+
+
+#Accuracy : 0.9936
+
+
+
+#  **Model 3 :Naive Bayes ROC**
+
+```{r}
+preds_nb <- bind_cols(
+  predict(nb_CV, newdata = test2, type = "prob"),
+  Predicted = predict(nb_CV, newdata = test2, type = "raw"),
+  Actual = test2$class
+)
+```
+
+
+# Works
+```{r}
+confusionMatrix(preds_nb$Predicted, reference = preds_nb$Actual)
+```
+
+
+#Accuracy : 0.9932
+
+#  **Model 3: KNN  ROC**
+
+```{r}
+preds_knn <- bind_cols(
+  predict(knn_cv, newdata = test2, type = "prob"),
+  Predicted = predict(knn_cv, newdata = test2, type = "raw"),
+  Actual = test2$class
+)
+```
+
+
+# Works
+
+```{r}
+confusionMatrix(preds_knn$Predicted, reference = preds_knn$Actual)
+```
+
+
+#Accuracy : 0.9856 
+
+# **Ploting the values of the selected features to visualize the false positive rate. **
+
+```{r}
+roc <- train %>% 
+  gather(Metric, Value, -c(13,1,4,5,6,8,9,10,11,12,15,17)) %>% 
+  mutate(Positive = class == "GALAXY") %>% 
+  group_by(Metric, Value) %>% 
+  summarise(Positive = sum(Positive), 
+            Negative = n() - sum(Positive)) %>% 
+  arrange(-Value) %>% 
+  mutate(TPR = cumsum(Positive) / sum(Positive), 
+         FPR = cumsum(Negative) / sum(Negative))
+```
+
+
+```{r}
+roc %>% 
+  group_by(Metric) %>% 
+  summarise(AUC = sum(diff(FPR) + na.omit(lead(TPR) + TPR)) / 2)
+```
+
+```{r}
+
+library(ggplot2)
+
+roc %>% 
+  ggplot(aes( x= FPR, y = TPR, color = Metric)) +
+  geom_line() +
+  geom_abline(lty = 2) +
+  xlab("False Positive Rate (1-specificity)") + 
+  ylab("True Positive Rate (Sensitivity)") +
+  ggtitle("ROC of Predicting Galaxies")
+```
+
+
+##Step4
+
+### Model Comparison
+# which model are the best? 
+#  From The Models Confusion Matrix Comparison and the ROC curve, we can see that the Logistic regression model using 10-fold cross-validation makes the best fit. Accuracy in predicting the 20% test data from our 90% train model, so we will use it build the main model to predict GALAXY/STAR
+
+
+### Rebuilt the model Predict GALAXY based on test data 
+#  **Model Logistic model using full train data with 10-kfold CV**
+
+#The Control  for the CV
+```{r}
+trctrl <- trainControl(method = "cv", number = 10 ) 
+```
+
+
+# The regression with the Control
+```{r}
+Logit_full <- train(class ~alpha + delta + i + redshift + MJD - class_GALAXY, 
+                  data = train, 
+                  method = "glm",
+                  trControl=trctrl,
+                  preProcess = c("center", "scale"),
+                  tuneLength = 10
+)
+Logit_full
+
+```
+
+
+#predict the test data (test) using the train8 data model with Logistic model
+#Accuracy     
+#0.9931995
+
+```{r}
+
+logit.probs <- predict(Logit_full, test, type = "prob")
+logit.pred <- rep("GALAXY", 8103) 
+logit.pred[logit.probs$STAR > .5] <- "STAR"
+table(logit.pred, test$class)
+```
+
+#logit.pred GALAXY STAR
+      #GALAXY   5900    5
+      #STAR       44 2154
+
+(5900+2154)/8103
+#[1] 0.9939529
+
